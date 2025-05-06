@@ -8,8 +8,8 @@ import os
 import string
 
 class IAMDataset(WordLineDataset):
-    def __init__(self, basefolder, subset, segmentation_level, fixed_size,  tokenizer, text_encoder, feat_extractor, transforms, args):
-        super().__init__(basefolder, subset, segmentation_level, fixed_size, tokenizer, text_encoder, feat_extractor, transforms, args)
+    def __init__(self, basefolder, subset, segmentation_level, fixed_size,  tokenizer, text_encoder, feat_extractor, transforms):
+        super().__init__(basefolder, subset, segmentation_level, fixed_size, tokenizer, text_encoder, feat_extractor, transforms)
         self.setname = 'IAM'
         self.trainset_file = '{}/{}/set_split/trainset.txt'.format(self.basefolder, self.setname)
         self.valset_file = '{}/{}/set_split/validationset1.txt'.format(self.basefolder, self.setname)
@@ -23,7 +23,6 @@ class IAMDataset(WordLineDataset):
         self.tokenizer = tokenizer
         self.text_encoder = text_encoder
         self.feat_extractor = feat_extractor
-        self.args = args
         #self.stopwords_path = '{}/{}/iam-stopwords'.format(self.basefolder, self.setname)
         super().__finalize__()
 
