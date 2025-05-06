@@ -1,16 +1,15 @@
-from abc import abstractmethod
 import math
+import random
+from abc import abstractmethod
+from inspect import isfunction
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch import einsum
 from einops import rearrange, repeat
-from inspect import isfunction
-import math
-import torchvision.models as models
-import random
-from transformers import CanineModel
+from torch import einsum
+
 
 def checkpoint(func, inputs, params, flag):
     """
@@ -29,7 +28,6 @@ def checkpoint(func, inputs, params, flag):
         return func(*inputs)
 
 
-
 class CheckpointFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, run_function, length, *args):
@@ -43,7 +41,6 @@ class CheckpointFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, *output_grads):
-        
         ctx.input_tensors = [x.float().detach().requires_grad_(True) for x in ctx.input_tensors]
         with torch.enable_grad():
             # Fixes a bug where the first op in run_function modifies the
@@ -62,12 +59,13 @@ class CheckpointFunction(torch.autograd.Function):
         del output_tensors
         return (None, None) + input_grads
 
+
 def exists(val):
     return val is not None
 
 
 def uniq(arr):
-    return{el: True for el in arr}.keys()
+    return {el: True for el in arr}.keys()
 
 
 def default(val, d):
@@ -85,7 +83,6 @@ def init_(tensor):
     std = 1 / math.sqrt(dim)
     tensor.uniform_(-std, std)
     return tensor
-
 
 
 def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
@@ -109,7 +106,6 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
     else:
         embedding = repeat(timesteps, 'b -> b d', d=dim)
     return embedding
-
 
 
 def get_sinusoid_encoding_table(n_position, d_hid, padding_idx=None):
@@ -177,7 +173,6 @@ def Normalize(in_channels):
     return torch.nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
 
 
-
 class CrossAttention(nn.Module):
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.):
         super().__init__()
@@ -197,20 +192,19 @@ class CrossAttention(nn.Module):
         )
 
     def forward(self, x, context=None, mask=None):
-        
         h = self.heads
         q = self.to_q(x)
         context = default(context, x)
-        
+
         k = self.to_k(context)
         v = self.to_v(context)
 
-        mask = None #torch.ones(1, 8192).bool().cuda('cuda:6')
-        
+        mask = None  # torch.ones(1, 8192).bool().cuda('cuda:6')
+
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
-        
+
         sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
-        
+
         if exists(mask):
             mask = rearrange(mask, 'b j -> b 1 1 j')
             max_neg_value = -torch.finfo(sim.dtype).max
@@ -222,18 +216,18 @@ class CrossAttention(nn.Module):
         out = einsum('b i j, b j d -> b i d', attn, v)
         out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
         return self.to_out(out)
-        
 
 
 def get_subsequent_mask(seq):
     ''' For masking out the subsequent info. '''
-    #'seq shape', seq.shape)
+    # 'seq shape', seq.shape)
     sz_b, len_s = seq.size()
     subsequent_mask = torch.triu(
         torch.ones((len_s, len_s), device=seq.device, dtype=torch.uint8), diagonal=1)
     subsequent_mask = subsequent_mask.unsqueeze(0).expand(sz_b, -1, -1)  # b x ls x ls
 
     return subsequent_mask
+
 
 def conv_nd(dims, *args, **kwargs):
     """
@@ -248,15 +242,15 @@ def conv_nd(dims, *args, **kwargs):
     raise ValueError(f"unsupported dimensions: {dims}")
 
 
-
 class BasicTransformerBlock(nn.Module):
     def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True):
         super().__init__()
-        #self.weights = ResNet18_Weights.DEFAULT
-        
-        #num_ftrs = self.image_encoder.fc.in_features
-        self.attn1 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention for the image
-        #self.attnc = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention for the context
+        # self.weights = ResNet18_Weights.DEFAULT
+
+        # num_ftrs = self.image_encoder.fc.in_features
+        self.attn1 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head,
+                                    dropout=dropout)  # is a self-attention for the image
+        # self.attnc = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention for the context
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
         self.attn2 = CrossAttention(query_dim=dim, context_dim=context_dim,
                                     heads=n_heads, dim_head=d_head, dropout=dropout)  # is self-attn if context is none
@@ -267,12 +261,11 @@ class BasicTransformerBlock(nn.Module):
 
     def forward(self, x, context=None):
         return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint)
-    
+
     def _forward(self, x, context=None):
-        
         x = self.attn1(self.norm1(x)) + x
-        #print('x shape', x.shape)
-        #print('context shape', context.shape)
+        # print('x shape', x.shape)
+        # print('context shape', context.shape)
         x = self.attn2(self.norm2(x), context=context, mask=None) + x
         x = self.ff(self.norm3(x)) + x
         return x
@@ -281,11 +274,11 @@ class BasicTransformerBlock(nn.Module):
 class Style_Text_Encoder(nn.Module):
     def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True):
         super().__init__()
-        #self.weights = ResNet18_Weights.DEFAULT
-        
-        #num_ftrs = self.image_encoder.fc.in_features
-        #self.attn1 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention for the image
-        #self.attnc = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention for the context
+        # self.weights = ResNet18_Weights.DEFAULT
+
+        # num_ftrs = self.image_encoder.fc.in_features
+        # self.attn1 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention for the image
+        # self.attnc = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention for the context
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
         self.attn2 = CrossAttention(query_dim=dim, context_dim=context_dim,
                                     heads=n_heads, dim_head=d_head, dropout=dropout)  # is self-attn if context is none
@@ -296,15 +289,13 @@ class Style_Text_Encoder(nn.Module):
 
     def forward(self, x, context=None):
         return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint)
-    
+
     def _forward(self, x, context=None):
-        
-        #x = self.attn1(self.norm1(x)) + x
+        # x = self.attn1(self.norm1(x)) + x
         x = self.attn2(x, context=context, mask=None) + x
-        #x = self.attn2(self.norm2(x), context=context, mask=None) + x
+        # x = self.attn2(self.norm2(x), context=context, mask=None) + x
         x = self.ff(self.norm3(x)) + x
         return x
-
 
 
 class SpatialTransformer(nn.Module):
@@ -315,6 +306,7 @@ class SpatialTransformer(nn.Module):
     Then apply standard transformer action.
     Finally, reshape to image
     """
+
     def __init__(self, in_channels, n_heads, d_head,
                  depth=1, dropout=0., context_dim=None, part='encoder', vocab_size=None):
         super().__init__()
@@ -330,7 +322,7 @@ class SpatialTransformer(nn.Module):
 
         self.transformer_blocks = nn.ModuleList(
             [BasicTransformerBlock(inner_dim, n_heads, d_head, dropout=dropout, context_dim=context_dim)
-                for d in range(depth)]
+             for d in range(depth)]
         )
 
         self.proj_out = zero_module(nn.Conv2d(inner_dim,
@@ -339,11 +331,11 @@ class SpatialTransformer(nn.Module):
                                               stride=1,
                                               padding=0))
         self.part = part
+
     def forward(self, x, context=None):
         # note: if no context is given, cross-attention defaults to self-attention
-        #print('x spatial trans in', x.shape)
-        
-        
+        # print('x spatial trans in', x.shape)
+
         # note: if no context is given, cross-attention defaults to self-attention
         b, c, h, w = x.shape
         x_in = x
@@ -351,7 +343,7 @@ class SpatialTransformer(nn.Module):
         x = self.proj_in(x)
         if self.part != 'sca':
             x = rearrange(x, 'b c h w -> b (h w) c')
-    
+
         for block in self.transformer_blocks:
             x = block(x, context=context)
         if self.part != 'sca':
@@ -360,13 +352,14 @@ class SpatialTransformer(nn.Module):
         return x + x_in
 
 
-
 # dummy replace
 def convert_module_to_f16(x):
     pass
 
+
 def convert_module_to_f32(x):
     pass
+
 
 def normalization(channels):
     """
@@ -375,6 +368,7 @@ def normalization(channels):
     :return: an nn.Module for normalization.
     """
     return GroupNorm32(32, channels)
+
 
 class GroupNorm32(nn.GroupNorm):
     def forward(self, x):
@@ -403,10 +397,10 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
         for layer in self:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
-                
+
             elif isinstance(layer, SpatialTransformer):
                 x = layer(x, context)
-                
+
             else:
                 x = layer(x)
         return x
@@ -442,16 +436,18 @@ class Upsample(nn.Module):
             x = self.conv(x)
         return x
 
+
 class TransposedUpsample(nn.Module):
     'Learned 2x upsampling without padding'
+
     def __init__(self, channels, out_channels=None, ks=5):
         super().__init__()
         self.channels = channels
         self.out_channels = out_channels or channels
 
-        self.up = nn.ConvTranspose2d(self.channels,self.out_channels,kernel_size=ks,stride=2)
+        self.up = nn.ConvTranspose2d(self.channels, self.out_channels, kernel_size=ks, stride=2)
 
-    def forward(self,x):
+    def forward(self, x):
         return self.up(x)
 
 
@@ -464,7 +460,7 @@ class Downsample(nn.Module):
                  downsampling occurs in the inner-two dimensions.
     """
 
-    def __init__(self, channels, use_conv, dims=2, out_channels=None,padding=1):
+    def __init__(self, channels, use_conv, dims=2, out_channels=None, padding=1):
         super().__init__()
         self.channels = channels
         self.out_channels = out_channels or channels
@@ -472,8 +468,8 @@ class Downsample(nn.Module):
         self.dims = dims
         stride = 2 if dims != 3 else (1, 2, 2)
         if use_conv:
-            self.op = nn.Conv2d(#dims,
-                 self.channels, self.out_channels, 3, stride=stride, padding=padding
+            self.op = nn.Conv2d(  # dims,
+                self.channels, self.out_channels, 3, stride=stride, padding=padding
             )
         else:
             assert self.channels == self.out_channels
@@ -501,17 +497,17 @@ class ResBlock(TimestepBlock):
     """
 
     def __init__(
-        self,
-        channels,
-        emb_channels,
-        dropout,
-        out_channels=None,
-        use_conv=False,
-        use_scale_shift_norm=False,
-        dims=2,
-        use_checkpoint=False,
-        up=False,
-        down=False,
+            self,
+            channels,
+            emb_channels,
+            dropout,
+            out_channels=None,
+            use_conv=False,
+            use_scale_shift_norm=False,
+            dims=2,
+            use_checkpoint=False,
+            up=False,
+            down=False,
     ):
         super().__init__()
         self.channels = channels
@@ -575,9 +571,8 @@ class ResBlock(TimestepBlock):
             self._forward, (x, emb), self.parameters(), self.use_checkpoint
         )
 
-
     def _forward(self, x, emb):
-        
+
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
@@ -586,10 +581,10 @@ class ResBlock(TimestepBlock):
             h = in_conv(h)
         else:
             h = self.in_layers(x)
-            
+
         # if context is None:
         #     context= torch.zeros(emb.shape).to(emb.device)
-        
+
         # emb = torch.cat([emb, context], dim=-1)
         emb_out = self.emb_layers(emb).type(h.dtype)
         while len(emb_out.shape) < len(h.shape):
@@ -602,9 +597,8 @@ class ResBlock(TimestepBlock):
         else:
             h = h + emb_out
             h = self.out_layers(h)
-        
-        return self.skip_connection(x) + h
 
+        return self.skip_connection(x) + h
 
 
 class Res_Block(nn.Module):
@@ -624,17 +618,17 @@ class Res_Block(nn.Module):
     """
 
     def __init__(
-        self,
-        channels,
-        emb_channels,
-        dropout,
-        out_channels=None,
-        use_conv=False,
-        use_scale_shift_norm=False,
-        dims=2,
-        use_checkpoint=False,
-        up=False,
-        down=False,
+            self,
+            channels,
+            emb_channels,
+            dropout,
+            out_channels=None,
+            use_conv=False,
+            use_scale_shift_norm=False,
+            dims=2,
+            use_checkpoint=False,
+            up=False,
+            down=False,
     ):
         super().__init__()
         self.channels = channels
@@ -698,7 +692,6 @@ class Res_Block(nn.Module):
             self._forward, (x, emb), self.parameters(), self.use_checkpoint
         )
 
-
     def _forward(self, x, emb):
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
@@ -722,7 +715,6 @@ class Res_Block(nn.Module):
         return self.skip_connection(x) + h
 
 
-
 class AttentionBlock(nn.Module):
     """
     An attention block that allows spatial positions to attend to each other.
@@ -731,12 +723,12 @@ class AttentionBlock(nn.Module):
     """
 
     def __init__(
-        self,
-        channels,
-        num_heads=1,
-        num_head_channels=-1,
-        use_checkpoint=False,
-        use_new_attention_order=False,
+            self,
+            channels,
+            num_heads=1,
+            num_head_channels=-1,
+            use_checkpoint=False,
+            use_new_attention_order=False,
     ):
         super().__init__()
         self.channels = channels
@@ -744,7 +736,7 @@ class AttentionBlock(nn.Module):
             self.num_heads = num_heads
         else:
             assert (
-                channels % num_head_channels == 0
+                    channels % num_head_channels == 0
             ), f"q,k,v channels {channels} is not divisible by num_head_channels {num_head_channels}"
             self.num_heads = channels // num_head_channels
         self.use_checkpoint = use_checkpoint
@@ -760,8 +752,9 @@ class AttentionBlock(nn.Module):
         self.proj_out = zero_module(nn.Conv2d(channels, channels, 1))
 
     def forward(self, x):
-        return checkpoint(self._forward, (x,), self.parameters(), True)   # TODO: check checkpoint usage, is True # TODO: fix the .half call!!!
-        #return pt_checkpoint(self._forward, x)  # pytorch
+        return checkpoint(self._forward, (x,), self.parameters(),
+                          True)  # TODO: check checkpoint usage, is True # TODO: fix the .half call!!!
+        # return pt_checkpoint(self._forward, x)  # pytorch
 
     def _forward(self, x):
         b, c, *spatial = x.shape
@@ -860,7 +853,7 @@ class QKVAttention(nn.Module):
 
 ##################################################################################
 
-    
+
 class Word_Attention(nn.Module):
     def __init__(self, input_size, hidden_size):
         super(Word_Attention, self).__init__()
@@ -868,20 +861,20 @@ class Word_Attention(nn.Module):
         self.linear_key = nn.Linear(input_size, hidden_size)
         self.linear_value = nn.Linear(input_size, hidden_size)
         self.softmax = nn.Softmax(dim=-1)
-        
+
     def forward(self, x):
         # x shape: (batch_size, seq_len, input_size)
         query = self.linear_query(x)
         key = self.linear_key(x)
         value = self.linear_value(x)
-        
+
         # Calculate attention scores
         scores = query @ key.transpose(-2, -1)
         scores = self.softmax(scores)
-        
+
         # Calculate weighted sum of the values
         word_embedding = scores @ value
-        #print('word emb', word_embedding.shape)
+        # print('word emb', word_embedding.shape)
         return word_embedding
 
 
@@ -897,30 +890,32 @@ class CharacterEncoder(nn.Module):
 
     def forward(self, x):
         # x shape: (batch_size, seq_len)
-        #print('x before embedding', x.shape)
+        # print('x before embedding', x.shape)
         x = self.embedding(x)
-        #print('x', x.shape)
+        # print('x', x.shape)
         x += self.positional_encoding[:x.size(1), :].to(x.device)
-        word_embedding = x #self.attention(x)
+        word_embedding = x  # self.attention(x)
         return word_embedding
-    
+
     def get_positional_encoding(self):
         positional_encoding = torch.zeros(self.max_seq_len, self.embedding_dim)
-        #print('pos enc', positional_encoding.shape)
+        # print('pos enc', positional_encoding.shape)
         for pos in range(self.max_seq_len):
             for i in range(0, self.embedding_dim, 2):
                 positional_encoding[pos, i] = math.sin(pos / (10000 ** (i / self.embedding_dim)))
                 positional_encoding[pos, i + 1] = math.cos(pos / (10000 ** ((i + 1) / self.embedding_dim)))
         return positional_encoding
 
+
 ##################################################################################
 class ResNet(nn.Module):
     def __init__(self, block, layers, num_classes=1000):
         # implementation details here
         super(ResNet, self).__init__()
+
     def forward(self, x):
         # forward pass implementation here
-        
+
         x = self.maxpool(self.relu(self.bn1(self.conv1(x))))
 
         x = self.layer1(x)
@@ -931,7 +926,6 @@ class ResNet(nn.Module):
         feat = self.fc(feat)
 
         return feat
-
 
 
 ##################################################################################
@@ -967,34 +961,34 @@ class UNetModel(nn.Module):
     """
 
     def __init__(
-        self,
-        image_size,
-        in_channels,
-        model_channels,
-        out_channels,
-        num_res_blocks,
-        attention_resolutions,
-        dropout=0,
-        channel_mult=(1, 2, 4, 8),
-        conv_resample=True,
-        dims=2,
-        num_classes=None,
-        use_checkpoint=False,
-        use_fp16=False,
-        num_heads=-1,
-        num_head_channels=-1,
-        num_heads_upsample=-1,
-        use_scale_shift_norm=False,
-        resblock_updown=False,
-        use_new_attention_order=False,
-        use_spatial_transformer=True,    # custom transformer support
-        transformer_depth=1,              # custom transformer support
-        context_dim=768,                 # custom transformer support
-        vocab_size=80,                  # custom transformer support
-        n_embed=None,                     # custom support for prediction of discrete ids into codebook of first stage vq model
-        legacy=False,
-        text_encoder=None,
-        args=None, 
+            self,
+            image_size,
+            in_channels,
+            model_channels,
+            out_channels,
+            num_res_blocks,
+            attention_resolutions,
+            dropout=0,
+            channel_mult=(1, 2, 4, 8),
+            conv_resample=True,
+            dims=2,
+            num_classes=None,
+            use_checkpoint=False,
+            use_fp16=False,
+            num_heads=-1,
+            num_head_channels=-1,
+            num_heads_upsample=-1,
+            use_scale_shift_norm=False,
+            resblock_updown=False,
+            use_new_attention_order=False,
+            use_spatial_transformer=True,  # custom transformer support
+            transformer_depth=1,  # custom transformer support
+            context_dim=768,  # custom transformer support
+            vocab_size=80,  # custom transformer support
+            n_embed=None,  # custom support for prediction of discrete ids into codebook of first stage vq model
+            legacy=False,
+            text_encoder=None,
+            args=None,
     ):
         super().__init__()
         if use_spatial_transformer:
@@ -1034,11 +1028,11 @@ class UNetModel(nn.Module):
         self.predict_codebook_ids = n_embed is not None
         self.args = args
 
-        #if clip is not None:
-            #self.clip = clip
-            #print('clip', self.clip)
-            #self.text_encoder = self.clip.text_encoder
-            #self.tokenizer = self.clip.tokenizer
+        # if clip is not None:
+        # self.clip = clip
+        # print('clip', self.clip)
+        # self.text_encoder = self.clip.text_encoder
+        # self.tokenizer = self.clip.tokenizer
 
         self.text_encoder = text_encoder
         time_embed_dim = model_channels * 4
@@ -1047,11 +1041,11 @@ class UNetModel(nn.Module):
             nn.SiLU(),
             nn.Linear(time_embed_dim, time_embed_dim),
         )
-        
+
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
-        #==================== INPUT BLOCK ====================
+        # ==================== INPUT BLOCK ====================
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
@@ -1087,7 +1081,7 @@ class UNetModel(nn.Module):
                         num_heads = ch // num_head_channels
                         dim_head = num_head_channels
                     if legacy:
-                        #num_heads = 1
+                        # num_heads = 1
                         dim_head = ch // num_heads if use_spatial_transformer else num_head_channels
                     layers.append(
                         AttentionBlock(
@@ -1134,11 +1128,11 @@ class UNetModel(nn.Module):
             num_heads = ch // num_head_channels
             dim_head = num_head_channels
         if legacy:
-            #num_heads = 1
+            # num_heads = 1
             dim_head = ch // num_heads if use_spatial_transformer else num_head_channels
 
-        #==================== MIDDLE BLOCK ====================
-        
+        # ==================== MIDDLE BLOCK ====================
+
         self.middle_block = TimestepEmbedSequential(
             ResBlock(
                 ch,
@@ -1155,8 +1149,8 @@ class UNetModel(nn.Module):
                 num_head_channels=dim_head,
                 use_new_attention_order=use_new_attention_order,
             ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
-                        ),
+                ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
+            ),
             ResBlock(
                 ch,
                 time_embed_dim,
@@ -1168,9 +1162,8 @@ class UNetModel(nn.Module):
         )
         self._feature_size += ch
 
-        
-        #==================== OUTPUT BLOCK ====================
-        
+        # ==================== OUTPUT BLOCK ====================
+
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
             for i in range(num_res_blocks + 1):
@@ -1194,7 +1187,7 @@ class UNetModel(nn.Module):
                         num_heads = ch // num_head_channels
                         dim_head = num_head_channels
                     if legacy:
-                        #num_heads = 1
+                        # num_heads = 1
                         dim_head = ch // num_heads if use_spatial_transformer else num_head_channels
                     layers.append(
                         AttentionBlock(
@@ -1234,18 +1227,18 @@ class UNetModel(nn.Module):
         )
         if self.predict_codebook_ids:
             self.id_predictor = nn.Sequential(
-            normalization(ch),
-            nn.Conv2d(model_channels, n_embed, 1),
-            nn.LogSoftmax(dim=1)  # change to cross_entropy and produce non-normalized logits
-        )
-        
+                normalization(ch),
+                nn.Conv2d(model_channels, n_embed, 1),
+                nn.LogSoftmax(dim=1)  # change to cross_entropy and produce non-normalized logits
+            )
+
         self.interpolation = args.interpolation
         self.mix_rate = args.mix_rate
-        #self.style_lin = nn.Linear(1280*5, time_embed_dim)
+        # self.style_lin = nn.Linear(1280*5, time_embed_dim)
         self.style_lin = nn.Linear(1280, time_embed_dim)
         self.target_token_idx = 0
         self.text_lin = nn.Linear(768, 320)
-    
+
     def convert_to_fp16(self):
         """
         Convert the torso of the model to float16.
@@ -1261,8 +1254,7 @@ class UNetModel(nn.Module):
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
-  
-    
+
     def forward(self, x, timesteps=None, context=None, y=None, mix_rate=None, style_extractor=None, **kwargs):
         """
         Apply the model to an input batch.
@@ -1272,25 +1264,24 @@ class UNetModel(nn.Module):
         :param y: an [N] Tensor of labels, if class-conditional.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        #print('y', y.shape)
-        
+        # print('y', y.shape)
+
         # assert (y is not None) == (
         #     self.num_classes is not None
         # ), "must specify y if and only if the model is class-conditional"
         hs = []
-        
-        t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)#.to(x.device)
+
+        t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)  # .to(x.device)
         emb = self.time_embed(t_emb)
-        
-        
-        #if self.num_classes is not None:
-         #   assert y.shape == (x.shape[0],)
+
+        # if self.num_classes is not None:
+        #   assert y.shape == (x.shape[0],)
         if style_extractor is not None:
             s_id = style_extractor
             y = s_id.to(x.device)
-           
+
         if self.interpolation:
-            
+
             s1 = random.randint(0, 338)
             s2 = random.randint(0, 338)
             while s1 == s2:
@@ -1299,67 +1290,62 @@ class UNetModel(nn.Module):
             y2 = torch.tensor([s2]).long().to(x.device)
             y1 = self.label_emb(y1).to(x.device)
             y2 = self.label_emb(y2).to(x.device)
-            y = (1-self.mix_rate)*y1 + self.mix_rate*y2
-            
+            y = (1 - self.mix_rate) * y1 + self.mix_rate * y2
+
             y = y.to(x.device)
-            emb = emb + y  
+            emb = emb + y
         else:
             if style_extractor is not None:
-                
+
                 b, e = emb.shape
-                
+
                 y = y.reshape(b, 5, -1)
                 y = torch.mean(y, dim=1)
 
-                noise=False
-                if noise==True:
+                noise = False
+                if noise == True:
                     magn = torch.norm(y, dim=1, keepdim=True)
-                    noise = torch.randn_like(y)*0.25
-                    #bernoulli mask in noise
-                    noise = noise*torch.bernoulli(torch.ones_like(noise)*0.2)
-                    
+                    noise = torch.randn_like(y) * 0.25
+                    # bernoulli mask in noise
+                    noise = noise * torch.bernoulli(torch.ones_like(noise) * 0.2)
+
                     y = y + noise
                     y = magn * y / torch.norm(y, dim=1, keepdim=True)
-                
+
                 y = self.style_lin(y)
-                
-                emb = emb + y 
-              
+
+                emb = emb + y
+
             else:
                 emb = emb + self.label_emb(y)
-            
+
         if context is not None:
-            
-            context = self.text_encoder(**context).last_hidden_state#.to(x.device)
-           
+
+            context = self.text_encoder(**context).last_hidden_state  # .to(x.device)
+
             if self.cont_dim == 320:
-                context = self.text_lin(context)#.unsqueeze(1)
-                
+                context = self.text_lin(context)  # .unsqueeze(1)
+
         h = x.type(self.dtype)
         context = context.to(h.device)
-        
-        #INPUT BLOCKS
+
+        # INPUT BLOCKS
         for module in self.input_blocks:
             h = module(h, emb, context)
             hs.append(h)
-        
-        #MIDDLE BLOCK
+
+        # MIDDLE BLOCK
         h = self.middle_block(h, emb, context)
-        
-        #OUTPUT BLOCKS
+
+        # OUTPUT BLOCKS
         for module in self.output_blocks:
             h = torch.cat([h, hs.pop()], dim=1)
             h = module(h, emb, context)
-            
+
         h = h.type(x.dtype)
-        
+
         if self.predict_codebook_ids:
             return self.id_predictor(h)
         else:
-            
+
             return self.out(h)
-
-
-
-
-

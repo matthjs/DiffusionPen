@@ -1,26 +1,23 @@
+import argparse
+import json
+import os
+import random
+import time
+
+import numpy as np
+import timm
 import torch
 import torch.nn as nn
-import torchvision.models as models
-from torchvision import transforms
-from torch.utils.data import DataLoader, Dataset, random_split
-import numpy as np
-from PIL import Image, ImageOps
-from os.path import isfile
-from skimage import io
-from torchvision.utils import save_image
-from skimage.transform import resize
-import os
-import argparse
 import torch.optim as optim
+from PIL import Image, ImageOps
+from skimage import io
+from skimage.transform import resize
+from torch.utils.data import DataLoader, Dataset, random_split
+from torchvision import transforms
 from tqdm import tqdm
-from utils.iam_dataset import IAMDataset
-from utils.auxilary_functions import affine_transformation
+
 from feature_extractor import ImageEncoder
-import timm
-import cv2
-import time
-import json
-import random
+from utils.auxilary_functions import affine_transformation
 
 
 class AvgMeter:
